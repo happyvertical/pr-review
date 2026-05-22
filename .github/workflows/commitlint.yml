@@ -4,9 +4,10 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# Workflow only reads the event payload (SHAs) + local git log. No
+# pull-requests API calls, so no pull-requests scope needed.
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
   commitlint:
@@ -27,25 +28,40 @@ jobs:
           # GitHub Actions injection-defense guidance.
           COMMITS=$(git log --format=%s "$BASE_SHA".."$HEAD_SHA")
 
+          # Escape user-controlled content before printing inside a
+          # ::error:: workflow command. Without this, a commit subject
+          # containing `%`, `\r`, or `\n` could spoof log output or
+          # inject further workflow commands.
+          escape_workflow_msg() {
+            local s="$1"
+            s="${s//\%/%25}"
+            s="${s//$'\r'/%0D}"
+            s="${s//$'\n'/%0A}"
+            printf '%s' "$s"
+          }
+
           FAILED=0
           while IFS= read -r msg; do
             [[ -z "$msg" ]] && continue
-            # Allow merge commits
-            if [[ "$msg" =~ ^Merge\  ]]; then
+            # Allow merge commits. Single space, not escaped — `Merge `
+            # is the literal prefix of `Merge branch …` and
+            # `Merge pull request …`.
+            if [[ "$msg" == Merge\ * ]]; then
               continue
             fi
-            if ! echo "$msg" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\([a-z0-9-]+\))?!?: .+'; then
-              echo "::error::Invalid commit message: $msg"
-              echo "  Expected format: type(scope?): subject"
-              echo "  Valid types: feat, fix, docs, style, refactor, perf, test, chore, ci, build, revert"
+            # Use printf instead of echo to avoid `-n`/`-e` flag parsing
+            # on subjects that happen to start with a dash.
+            if ! printf '%s\n' "$msg" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\([a-z0-9-]+\))?!?: .+'; then
+              printf '::error::Invalid commit message: %s\n' "$(escape_workflow_msg "$msg")"
+              printf '  Expected format: type(scope?): subject\n'
+              printf '  Valid types: feat, fix, docs, style, refactor, perf, test, chore, ci, build, revert\n'
               FAILED=1
             fi
           done <<< "$COMMITS"
 
           if [[ "$FAILED" -eq 1 ]]; then
-            echo ""
-            echo "See https://www.conventionalcommits.org/ for the full spec."
+            printf '\nSee https://www.conventionalcommits.org/ for the full spec.\n'
             exit 1
           fi
 
-          echo "✓ All commits follow Conventional Commits format."
+          printf '✓ All commits follow Conventional Commits format.\n'
