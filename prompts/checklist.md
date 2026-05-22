@@ -194,13 +194,26 @@ For changes under `manifests/`, `.github/workflows/`, `infra/`, `iac/`,
   other event-payload string inside a `::error::` / `::warning::` /
   `::notice::` / `::set-output::` line without escaping lets an
   attacker inject arbitrary workflow commands via `%` / `\r` / `\n` in
-  the source string. Escape with `s//\%/%25/`, `s/\r/%0D/`, `s/\n/%0A/`
-  before printing. (Even non-attack cases — a commit subject containing
-  `%` will get URL-decoded in the log and confuse you.)
-- **`echo "$user_input" | grep` parses dashes as flags**: subjects
-  starting with `-n`, `-e`, `-E` get treated as echo options by some
-  shells. Use `printf '%s\n' "$user_input"` instead — safe for any
-  input.
+  the source string. Per [GitHub's workflow-commands docs](https://docs.github.com/en/actions/learn-github-actions/workflow-commands-for-github-actions),
+  apply these replacements before printing user input: `%` → `%25`,
+  CR → `%0D`, LF → `%0A`. A safe bash helper:
+  ```bash
+  escape_workflow_msg() {
+    local s="$1"
+    s="${s//\%/%25}"
+    s="${s//$'\r'/%0D}"
+    s="${s//$'\n'/%0A}"
+    printf '%s' "$s"
+  }
+  ```
+  (Even in non-attack cases, a commit subject containing `%` will get
+  URL-decoded in the log and confuse you.)
+- **`echo "$user_input"` treats leading `-n`/`-e`/`-E` as flags**: when
+  a commit subject (or any user-controlled string) starts with one of
+  those, bash builtins and some `/bin/echo` implementations swallow the
+  argument as an option instead of printing it. Downstream `grep` /
+  pipelines silently get empty input and a wrong result. Use
+  `printf '%s\n' "$user_input"` — always safe regardless of content.
 - **GitHub Actions permissions broader than the workflow needs**: each
   `permissions:` entry should map to a real API call the workflow
   makes. `pull-requests: read` on a workflow that only reads git log
