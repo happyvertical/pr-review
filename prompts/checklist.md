@@ -294,11 +294,16 @@ them. Otherwise:
   `interface`, `as` casts, generic parameters, parameter type
   annotations are all fine. Default-enabled in **Node 22.18+** and
   **Node 23.6+ / 24**; available via `--experimental-strip-types`
-  in Node 22.6 through 22.17. But Node *cannot* run non-erasable
-  TypeScript: enum values, namespaces with runtime code, parameter
-  properties (`constructor(public x: number)`), TSX/JSX, or
-  decorators that need transformation. For those, you need `tsx`,
-  `ts-node`, or a build step.
+  in Node 22.6 through 22.17. Non-erasable TypeScript — enum values,
+  namespaces with runtime code, parameter properties
+  (`constructor(public x: number)`), TSX/JSX, or decorators that
+  need transformation — needs more: either pass
+  `--experimental-transform-types` to a Node version that supports
+  it (24/25+), or use `tsx`/`ts-node`/a build step. **The flag has
+  to actually be in the invocation** — a bare `#!/usr/bin/env node`
+  shebang doesn't pick it up; either inline with `#!/usr/bin/env -S
+  node --experimental-transform-types`, set `NODE_OPTIONS`, or call
+  from a script wrapper that adds it.
 
   The shebang should reflect the file's actual runtime: drop it if
   the file is only invoked via package.json scripts, use
