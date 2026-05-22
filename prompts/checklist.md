@@ -188,7 +188,8 @@ common in shared-config / monorepo / base-config setups.
     parameters, parameter type annotations): stripped natively by
     default on **Node 22.18+** and on **Node 23.6+ across later
     majors** (24, 25, 26+); available via `--experimental-strip-types`
-    on Node 22.6-22.17. Cheapest, most portable case.
+    on Node 22.6-22.17 and Node 23.0-23.5 (before default enablement).
+    Cheapest, most portable case.
   - **Some non-erasable syntax** (enum values, namespaces with
     runtime code, parameter properties): handled by
     `--experimental-transform-types`, **available Node 22.7 through
