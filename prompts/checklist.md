@@ -164,6 +164,16 @@ common in shared-config / monorepo / base-config setups.
   `bar` are already `optionalDependencies` (installed transitively).
   Causes duplicate installation and version skew. Only document
   installs the consumer must do themselves.
+- **Engine/version constraints looser than what the lockfile actually
+  needs**: `engines.node: ">=20"` looks reasonable, but if the lockfile
+  pulls in deps requiring `^20.19.0`, consumers on Node 20.0-20.18
+  hit install/runtime failures. The declared constraint must satisfy
+  every transitive requirement. Same trap on `actions/setup-node`'s
+  `node-version: '20'` (resolves to latest 20.x, but the runner's
+  default may lag the required minor), the `packageManager` field in
+  package.json, `.nvmrc`, Docker base image tags, and CI tool-version
+  pins. Pin to the strictest minimum the dependency tree requires,
+  or bump to the org-standard runtime version.
 
 ### 8. Infrastructure & deploy hazards
 
@@ -189,6 +199,24 @@ For changes under `manifests/`, `.github/workflows/`, `infra/`, `iac/`,
   clear usage error.
 - **Interpolated shell variables into `psql -c` / `sed` / `perl`
   substitutions** without escaping — fine today, time-bomb tomorrow.
+- **Shell escape sequences and regex patterns that visually differ
+  from their parsed meaning**: `Merge\ ` (escape-plus-space) is *two*
+  characters, not one — a regex `^Merge\  ` will never match the
+  single-space `Merge branch …` subject git actually writes. Same
+  trap with `'\n'` (literal backslash-n) vs `$'\n'` (newline) in bash,
+  `\d` in BRE vs ERE vs PCRE, `[abc]` vs `\[abc\]`. When writing an
+  allowlist regex or shell substitution, validate against a real
+  sample of the input you're trying to match.
+- **Third-party GitHub Actions pinned to moving tags instead of
+  commit SHAs**: `actions/checkout@v5` is a mutable tag — the action
+  repo (or anyone who compromises the maintainer's account) can
+  rewrite it at any time, with no signal to consuming workflows. Per
+  [GitHub's supply-chain guidance](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions),
+  pin to the full SHA with a tag comment for readability:
+  `actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5`.
+  Renovate/Dependabot keep these current. First-party `actions/*` is
+  lower risk but the discipline is uniform; vendored agent workflows
+  in the org already follow this pattern.
 - **GitHub Actions workflow-command injection from user-controlled
   content**: printing a commit subject, PR title, branch name, or any
   other event-payload string inside a `::error::` / `::warning::` /
@@ -250,3 +278,12 @@ them. Otherwise:
 - Duplicate type-only imports of `./$types`.
 - Numeric literals without separators in a codebase that uses `_`.
 - SSR-unsafe `$app/navigation` calls outside a `browser` guard.
+- **Shebang interpreter doesn't match the file's syntax**:
+  `#!/usr/bin/env node` on a `.ts` file with type annotations
+  (`interface`, `as`, generics) fails on direct execution — Node
+  can't parse TypeScript natively. Either drop the shebang (if the
+  file is only invoked via a runner like `tsx` or `ts-node`), use
+  `#!/usr/bin/env -S tsx`, or compile to JS first. Same trap for
+  `#!/usr/bin/env python` running 3.10+ match-statement syntax in
+  an env where `python` resolves to 3.9, or `#!/bin/sh` running
+  bashisms like `[[ ]]` or `$'...'`.
