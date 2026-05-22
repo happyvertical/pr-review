@@ -1,11 +1,11 @@
 # pr-review
 
 Pre-PR self-review prompt generator. Harness-agnostic: it emits a prompt + diff
-bundle to stdout, and you pipe it to whichever LLM tool you prefer (codex,
-claude, gemini, web chat, …).
+bundle to stdout, and you pipe it to whichever LLM tool you prefer (codex-cli,
+claude-cli, gemini, web chat, …).
 
 Built to compress review iterations by front-loading the kind of analysis a
-careful reviewer (or an AI reviewer like GitHub Copilot) does *after* you
+careful reviewer (or an AI reviewer like GitHub copilot-cli) does *after* you
 open the PR — so the author can fix issues now instead of in a back-and-forth.
 
 ## Install
@@ -23,7 +23,7 @@ ln -s "$PWD/pr-review/bin/pr-review" ~/bin/pr-review
 From inside any git repo:
 
 ```bash
-# Codex CLI (uses your ~/.codex/config.toml defaults: gpt-5.5 + xhigh)
+# codex-cli (uses your ~/.codex/config.toml defaults: gpt-5.5 + xhigh)
 pr-review | codex exec -
 
 # Claude Code (one-shot)
@@ -135,7 +135,7 @@ read -p "Review and continue? [y/N] " ans
 ### Run in a Claude Code slash command
 
 Add to `~/.claude/skills/pr-review/skill.md` or a project-level skill — it
-runs the script and pipes through Claude's planning loop, surfacing findings
+runs the script and pipes through claude-cli's planning loop, surfacing findings
 in your terminal.
 
 ### Iterate to convergence
@@ -157,7 +157,7 @@ When round-N produces no high/medium findings, you're done. Push.
 
 For high-stakes PRs, run the same `pr-review` prompt through several LLMs
 in parallel and merge findings. Each model has different blind spots —
-codex catches things claude misses and vice versa. Copilot adds a third
+codex-cli catches things claude-cli misses and vice versa. copilot-cli adds a third
 viewpoint that's tuned to GitHub's review style.
 
 This is a recipe, not a script — pr-review stays emit-only on purpose so
@@ -277,7 +277,7 @@ It does not catch what *neither* caught:
 
 - Business-logic intent (does the PR do the right thing?)
 - Cross-PR design questions
-- Bugs both pr-review and Copilot share blind spots on
+- Bugs both pr-review and copilot-cli share blind spots on
 
 Keep a human in the loop periodically. The tune doesn't replace review;
 it shortens iterations on the review you'd do anyway.
@@ -300,7 +300,7 @@ Based on analysis of 110 review comments across 36 anytown.ai PRs:
 | Pure mechanical (separators, dupe imports) | ~6% | Leave to linter |
 
 Realistic compression target: 50–70% of round-2 review cycles eliminated.
-A/B test it: count the findings Copilot adds *on top of* what pr-review
+A/B test it: count the findings copilot-cli adds *on top of* what pr-review
 already caught. If that delta drops below half of baseline, it's working.
 
 ## License
