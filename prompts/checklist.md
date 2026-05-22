@@ -202,15 +202,16 @@ For changes under `manifests/`, `.github/workflows/`, `infra/`, `iac/`,
 - **Shell escape sequences and regex patterns that visually differ
   from their parsed meaning**: invisible trailing whitespace is the
   classic foot-gun — a regex `^Merge\  ` (escaped space *plus* a
-  trailing literal space, six chars total) never matches the
-  single-space `Merge branch …` subject git actually writes, but on
-  screen it looks identical to the intended `^Merge\ ` (escaped
-  space, five chars). Same trap with `'\n'` (literal backslash-n)
-  vs `$'\n'` (actual newline) in bash, `\d` semantics differing
-  across BRE vs ERE vs PCRE, `[abc]` (class) vs `\[abc\]` (literals).
-  When writing an allowlist regex or shell substitution, validate
-  against a real sample of the input you're trying to match — don't
-  trust the on-screen rendering.
+  trailing literal space) matches `Merge` followed by **two** spaces,
+  but on screen it looks identical to the intended `^Merge\ `
+  (escaped space alone) which matches `Merge` followed by one space.
+  Git writes one space after `Merge` in subjects, so the buggy form
+  never matches. Same trap with `'\n'` (literal backslash-n) vs
+  `$'\n'` (actual newline) in bash, `\d` semantics differing across
+  BRE vs ERE vs PCRE, `[abc]` (class) vs `\[abc\]` (literals). When
+  writing an allowlist regex or shell substitution, validate against
+  a real sample of the input you're trying to match — don't trust
+  the on-screen rendering.
 - **Third-party GitHub Actions pinned to moving tags instead of
   commit SHAs**: `actions/checkout@v5` is a mutable tag — the action
   repo (or anyone who compromises the maintainer's account) can
@@ -283,12 +284,24 @@ them. Otherwise:
 - Duplicate type-only imports of `./$types`.
 - Numeric literals without separators in a codebase that uses `_`.
 - SSR-unsafe `$app/navigation` calls outside a `browser` guard.
-- **Shebang interpreter doesn't match the file's syntax**:
-  `#!/usr/bin/env node` on a `.ts` file with type annotations
-  (`interface`, `as`, generics) fails on direct execution — Node
-  can't parse TypeScript natively. Either drop the shebang (if the
-  file is only invoked via a runner like `tsx` or `ts-node`), use
-  `#!/usr/bin/env -S tsx`, or compile to JS first. Same trap for
+- **Shebang interpreter doesn't match the file's actual runtime
+  requirements**: `#!/usr/bin/env node` on a `.ts` file *can* work on
+  Node 22.6+ (with `--experimental-strip-types`) and Node 23.6+ /
+  Node 24 (enabled by default) because Node strips erasable type
+  syntax natively — `interface`, `as` casts, generic parameters,
+  parameter type annotations are all fine. But Node *cannot* run
+  non-erasable TypeScript: enum values, namespaces with runtime
+  code, parameter properties (`constructor(public x: number)`),
+  TSX/JSX, or decorators that need transformation. For those, you
+  need `tsx`, `ts-node`, or a build step.
+  
+  The shebang should reflect the file's actual runtime: drop it if
+  the file is only invoked via package.json scripts, use
+  `#!/usr/bin/env -S tsx` for scripts that need tsx, or
+  `#!/usr/bin/env node` *only when* the file's syntax stays within
+  what Node's stripper supports and your project's pinned Node is
+  ≥ 22.6 (with the flag) or ≥ 23.6. Same trap class for
   `#!/usr/bin/env python` running 3.10+ match-statement syntax in
   an env where `python` resolves to 3.9, or `#!/bin/sh` running
-  bashisms like `[[ ]]` or `$'...'`.
+  bashisms like `[[ ]]` / `$'...'` — the interpreter the shebang
+  names must actually parse the file as written.
