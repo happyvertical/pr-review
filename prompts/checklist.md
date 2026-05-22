@@ -48,9 +48,13 @@ Any change touching a model with a `tenant_id` / `tenantId` column, or
 calling a function that crosses tenant boundaries:
 
 - **Equality checks against possibly-undefined tenant fields**: `if
-  (content.tenantId !== context.tenantId)` passes when both are
-  `undefined`. Restate as an affirmative assertion that requires both to
-  be present.
+  (content.tenantId !== context.tenantId) throw 403` is meant as an auth
+  gate, but when both sides are `undefined` the comparison evaluates
+  `false`, the gate body doesn't run, and the request is silently
+  authorized for cross-tenant access. Restate as an affirmative
+  assertion that requires both sides to be defined *before* comparing
+  (e.g. `if (!content.tenantId || !context.tenantId ||
+  content.tenantId !== context.tenantId) throw 403`).
 - **Cross-tenant data leaks via missing filters**: an API listing call
   that post-filters in-memory but doesn't pass `tenantId` to the upstream
   query. Records lacking the filter field slip through.
