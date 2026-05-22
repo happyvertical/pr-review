@@ -178,6 +178,39 @@ common in shared-config / monorepo / base-config setups.
   tags, and CI tool-version pins. Pin to the strictest minimum the
   dependency tree requires, or bump to the org-standard runtime
   version.
+- **Shebang interpreter doesn't match the file's actual runtime
+  requirements**: `#!/usr/bin/env node` on a `.ts` file works only
+  for the slice of TypeScript syntax Node's *current* native support
+  handles. That support has three tiers and the version windows
+  matter (verify against Node's TypeScript docs because they shift):
+
+  - **Erasable type syntax** (`interface`, `as` casts, generic
+    parameters, parameter type annotations): stripped natively by
+    default on **Node 22.18+** and on **Node 23.6+ across later
+    majors** (24, 25, 26+); available via `--experimental-strip-types`
+    on Node 22.6-22.17. Cheapest, most portable case.
+  - **Some non-erasable syntax** (enum values, namespaces with
+    runtime code, parameter properties): handled by
+    `--experimental-transform-types`, **available Node 22.7 through
+    25.x, removed in 26+**. Shebang must explicitly include the
+    flag — `#!/usr/bin/env -S node --experimental-transform-types`
+    — or set it via `NODE_OPTIONS` / a wrapper script. A
+    bare `node` shebang ignores it.
+  - **Not supported by Node natively**: TSX/JSX, decorators,
+    tsconfig path aliases. These require `tsx`, `ts-node`, or a
+    real build step regardless of Node version.
+
+  So `#!/usr/bin/env node` is right *only* when the file's syntax
+  fits the supported tiers for the project's pinned Node and the
+  invocation includes the right flags. `#!/usr/bin/env -S tsx`
+  covers everything but is heavier. Drop the shebang entirely if
+  the file is invoked only via npm scripts — no need to claim a
+  runtime in the file itself. Same trap class for `#!/usr/bin/env
+  python` running 3.10+ match-statement syntax where `python`
+  resolves to 3.9, or `#!/bin/sh` running bashisms like `[[ ]]` /
+  `$'...'` — the interpreter the shebang names must actually parse
+  the file as written. (Linters don't catch this — it's a config
+  hazard, not a style issue.)
 
 ### 8. Infrastructure & deploy hazards
 
@@ -216,17 +249,21 @@ For changes under `manifests/`, `.github/workflows/`, `infra/`, `iac/`,
   writing an allowlist regex or shell substitution, validate against
   a real sample of the input you're trying to match — don't trust
   the on-screen rendering.
-- **Third-party GitHub Actions pinned to moving tags instead of
-  commit SHAs**: `actions/checkout@v5` is a mutable tag — the action
-  repo (or anyone who compromises the maintainer's account) can
-  rewrite it at any time, with no signal to consuming workflows. Per
+- **GitHub Actions pinned to moving tags instead of commit SHAs**:
+  `actions/checkout@v5` is a mutable tag — the action repo (or
+  anyone who compromises the maintainer's account) can rewrite it at
+  any time, with no signal to consuming workflows. Per
   [GitHub's supply-chain guidance](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions),
   pin to the full SHA with a tag comment for readability:
   `actions/checkout@<sha> # v5`. Fetch the current SHA with
   `gh api repos/actions/checkout/git/refs/tags/v5 -q .object.sha`.
-  Renovate/Dependabot keep pinned SHAs current. First-party
-  `actions/*` is lower risk but the discipline is uniform; vendored
-  agent workflows in the org already follow this pattern.
+  Renovate/Dependabot keep pinned SHAs current. **Third-party**
+  actions (anything outside the `actions/*` namespace) are the
+  highest-risk case — compromised maintainer accounts have shipped
+  malicious updates under existing tags. **First-party** `actions/*`
+  is lower risk (GitHub controls the repo) but the discipline
+  should still be uniform; vendored agent workflows in the org
+  already follow this pattern for all actions, not just third-party.
 - **GitHub Actions workflow-command injection from user-controlled
   content**: printing a commit subject, PR title, branch name, or any
   other event-payload string inside a `::error::` / `::warning::` /
@@ -288,35 +325,3 @@ them. Otherwise:
 - Duplicate type-only imports of `./$types`.
 - Numeric literals without separators in a codebase that uses `_`.
 - SSR-unsafe `$app/navigation` calls outside a `browser` guard.
-- **Shebang interpreter doesn't match the file's actual runtime
-  requirements**: `#!/usr/bin/env node` on a `.ts` file works only
-  for the slice of TypeScript syntax Node's *current* native support
-  handles. That support has three tiers and the version windows
-  matter (verify against Node's TypeScript docs because they shift):
-
-  - **Erasable type syntax** (`interface`, `as` casts, generic
-    parameters, parameter type annotations): stripped natively by
-    default on **Node 22.18+** and on **Node 23.6+ across later
-    majors** (24, 25, 26+); available via `--experimental-strip-types`
-    on Node 22.6-22.17. Cheapest, most portable case.
-  - **Some non-erasable syntax** (enum values, namespaces with
-    runtime code, parameter properties): handled by
-    `--experimental-transform-types`, **available Node 22.7 through
-    25.x, removed in 26+**. Shebang must explicitly include the
-    flag — `#!/usr/bin/env -S node --experimental-transform-types`
-    — or set it via `NODE_OPTIONS` / a wrapper script. A
-    bare `node` shebang ignores it.
-  - **Not supported by Node natively**: TSX/JSX, decorators,
-    tsconfig path aliases. These require `tsx`, `ts-node`, or a
-    real build step regardless of Node version.
-
-  So `#!/usr/bin/env node` is right *only* when the file's syntax
-  fits the supported tiers for the project's pinned Node and the
-  invocation includes the right flags. `#!/usr/bin/env -S tsx`
-  covers everything but is heavier. Drop the shebang entirely if
-  the file is invoked only via npm scripts — no need to claim a
-  runtime in the file itself. Same trap class for `#!/usr/bin/env
-  python` running 3.10+ match-statement syntax where `python`
-  resolves to 3.9, or `#!/bin/sh` running bashisms like `[[ ]]` /
-  `$'...'` — the interpreter the shebang names must actually parse
-  the file as written.
