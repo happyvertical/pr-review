@@ -15,7 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      # SHA-pinned per GitHub's supply-chain recommendation. To update,
+      # find the new SHA: `gh api repos/actions/checkout/git/refs/tags/v5`
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
 
