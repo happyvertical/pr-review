@@ -19,6 +19,13 @@ at the exact lines and explain the failure path concretely. It is
 low-confidence findings as such — don't drop them, but make the uncertainty
 explicit.
 
+**Findings are evidence, not orders.** The author will verify each finding
+against the code before fixing. Your job is to give them accurate, citable
+evidence — exact file paths, line numbers, and the concrete failure path.
+Vague claims ("this could fail") get dismissed and erode trust in the next
+round. Concrete claims ("when both sides are undefined, `!==` returns false,
+the gate body doesn't run, request proceeds") get acted on.
+
 ## Checklist
 
 ### 1. Refactor regressions (the highest-frequency miss)

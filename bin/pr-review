@@ -15,6 +15,11 @@
 #   --pretty              Emit markdown findings instead of JSON
 #   --include-new-files   Embed full contents of newly-added files in addition
 #                         to the diff (helps with new-file context)
+#   --no-diff             Omit the diff section from output. Use when the
+#                         downstream tool fetches its own diff (e.g.
+#                         `codex review --base <base>`) to avoid sending it
+#                         twice and confusing the LLM about which diff to
+#                         review.
 #   --core-dir DIR        Path to shared pr-review core (default: discovered
 #                         from $PR_REVIEW_CORE or relative to this script)
 #   -h, --help            Show this help
@@ -32,6 +37,7 @@ BASE=""
 REPO="$PWD"
 PRETTY=0
 INCLUDE_NEW_FILES=0
+NO_DIFF=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --repo) REPO="$2"; shift 2 ;;
     --pretty) PRETTY=1; shift ;;
     --include-new-files) INCLUDE_NEW_FILES=1; shift ;;
+    --no-diff) NO_DIFF=1; shift ;;
     --core-dir) CORE_DIR="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'
@@ -181,7 +188,21 @@ $EXTENSIONS
 EXT
 fi
 
-cat <<FORMAT
+if [[ "$NO_DIFF" -eq 1 ]]; then
+  cat <<FORMAT
+
+---
+
+$FORMAT
+
+---
+
+**Diff omitted** (\`--no-diff\` set). The downstream tool is expected to
+fetch the diff between \`$BASE\` and \`HEAD\` itself. Apply the checklist
+above to that diff.
+FORMAT
+else
+  cat <<FORMAT
 
 ---
 
@@ -192,17 +213,18 @@ $FORMAT
 ## Diff
 FORMAT
 
-if [[ -n "$NEW_FILES_SECTION" ]]; then
-  cat <<NEW
+  if [[ -n "$NEW_FILES_SECTION" ]]; then
+    cat <<NEW
 
 ### Newly-added files (full contents)
 $NEW_FILES_SECTION
 NEW
-fi
+  fi
 
-cat <<DIFF
+  cat <<DIFF
 
 \`\`\`diff
 $DIFF
 \`\`\`
 DIFF
+fi

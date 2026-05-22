@@ -153,6 +153,58 @@ pr-review --pretty | codex exec -
 
 When round-N produces no high/medium findings, you're done. Push.
 
+### Ensemble review (multiple LLMs in parallel)
+
+For high-stakes PRs, run the same `pr-review` prompt through several LLMs
+in parallel and merge findings. Each model has different blind spots —
+codex catches things claude misses and vice versa. Copilot adds a third
+viewpoint that's tuned to GitHub's review style.
+
+This is a recipe, not a script — pr-review stays emit-only on purpose so
+you compose with whatever ensemble glue suits your harness.
+
+```bash
+PR_BASE=origin/dev
+OUT=/tmp/pr-review-$(date +%s)
+mkdir -p "$OUT"
+
+# Capture each tool's findings to separate files
+pr-review --base "$PR_BASE"            | codex exec -        > "$OUT/codex.json" 2> "$OUT/codex.err" &
+pr-review --base "$PR_BASE"            | claude -p           > "$OUT/claude.json" 2> "$OUT/claude.err" &
+pr-review --base "$PR_BASE" --no-diff  | codex review --base "$PR_BASE" - > "$OUT/codex-review.txt" 2> "$OUT/codex-review.err" &
+gh copilot suggest -t shell "$(pr-review --base "$PR_BASE" --pretty)" > "$OUT/copilot.txt" 2> "$OUT/copilot.err" &
+wait
+
+# Merge — ask one LLM to deduplicate and rank
+cat "$OUT"/*.json "$OUT"/*.txt | claude -p "Merge these review findings into one prioritized checklist. Dedupe near-duplicates. Order by severity desc, then by file. Drop findings that fewer than 2 reviewers flagged unless severity is high." > "$OUT/merged.md"
+
+less "$OUT/merged.md"
+```
+
+**Operational notes:**
+
+- **Allow at least 15 minutes per reviewer.** Some tools time out at 2-5
+  minutes by default — bump it. Slow reviews are usually thorough
+  reviews; fast ones often skim.
+- **Capture stdout and stderr separately.** When a tool returns no
+  findings or a malformed result, the cause is almost always in stderr.
+  Saving them apart makes triage trivial.
+- **Use `--no-diff` for `codex review`.** It fetches its own diff from
+  `--base`. Sending the diff inside the prompt too just confuses the
+  model about which diff to review.
+- **Treat each tool's output as evidence, not as orders.** Verify
+  before fixing. Tools hallucinate file paths and line numbers more
+  often when temperature is high — concrete file:line references with
+  matching context are reliable, vague claims are not.
+- **Don't make a downstream PR draft solely because** one of the
+  reviewers raised a low-confidence concern. Address the concrete
+  findings, document the dismissed ones in the PR body, ship.
+
+For a real-world example of this pattern wired into a shipping pipeline,
+see the `/review-cycle` and `/ship` slash commands at
+https://github.com/willgriffin/personal-ship-command (or whatever
+ensemble harness you prefer).
+
 ## The calibration loop
 
 The checklist will rot if you don't close the feedback loop. `pr-review-tune`
