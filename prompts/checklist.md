@@ -200,23 +200,28 @@ For changes under `manifests/`, `.github/workflows/`, `infra/`, `iac/`,
 - **Interpolated shell variables into `psql -c` / `sed` / `perl`
   substitutions** without escaping — fine today, time-bomb tomorrow.
 - **Shell escape sequences and regex patterns that visually differ
-  from their parsed meaning**: `Merge\ ` (escape-plus-space) is *two*
-  characters, not one — a regex `^Merge\  ` will never match the
-  single-space `Merge branch …` subject git actually writes. Same
-  trap with `'\n'` (literal backslash-n) vs `$'\n'` (newline) in bash,
-  `\d` in BRE vs ERE vs PCRE, `[abc]` vs `\[abc\]`. When writing an
-  allowlist regex or shell substitution, validate against a real
-  sample of the input you're trying to match.
+  from their parsed meaning**: invisible trailing whitespace is the
+  classic foot-gun — a regex `^Merge\  ` (escaped space *plus* a
+  trailing literal space, six chars total) never matches the
+  single-space `Merge branch …` subject git actually writes, but on
+  screen it looks identical to the intended `^Merge\ ` (escaped
+  space, five chars). Same trap with `'\n'` (literal backslash-n)
+  vs `$'\n'` (actual newline) in bash, `\d` semantics differing
+  across BRE vs ERE vs PCRE, `[abc]` (class) vs `\[abc\]` (literals).
+  When writing an allowlist regex or shell substitution, validate
+  against a real sample of the input you're trying to match — don't
+  trust the on-screen rendering.
 - **Third-party GitHub Actions pinned to moving tags instead of
   commit SHAs**: `actions/checkout@v5` is a mutable tag — the action
   repo (or anyone who compromises the maintainer's account) can
   rewrite it at any time, with no signal to consuming workflows. Per
   [GitHub's supply-chain guidance](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions),
   pin to the full SHA with a tag comment for readability:
-  `actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5`.
-  Renovate/Dependabot keep these current. First-party `actions/*` is
-  lower risk but the discipline is uniform; vendored agent workflows
-  in the org already follow this pattern.
+  `actions/checkout@<sha> # v5`. Fetch the current SHA with
+  `gh api repos/actions/checkout/git/refs/tags/v5 -q .object.sha`.
+  Renovate/Dependabot keep pinned SHAs current. First-party
+  `actions/*` is lower risk but the discipline is uniform; vendored
+  agent workflows in the org already follow this pattern.
 - **GitHub Actions workflow-command injection from user-controlled
   content**: printing a commit subject, PR title, branch name, or any
   other event-payload string inside a `::error::` / `::warning::` /
