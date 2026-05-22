@@ -296,9 +296,9 @@ them. Otherwise:
 
   - **Erasable type syntax** (`interface`, `as` casts, generic
     parameters, parameter type annotations): stripped natively by
-    default on **Node 22.18+** and **23.6+ / 24**; available via
-    `--experimental-strip-types` on Node 22.6-22.17. Cheapest, most
-    portable case.
+    default on **Node 22.18+** and on **Node 23.6+ across later
+    majors** (24, 25, 26+); available via `--experimental-strip-types`
+    on Node 22.6-22.17. Cheapest, most portable case.
   - **Some non-erasable syntax** (enum values, namespaces with
     runtime code, parameter properties): handled by
     `--experimental-transform-types`, **available Node 22.7 through
