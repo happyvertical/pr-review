@@ -1,0 +1,51 @@
+name: Commitlint
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  commitlint:
+    name: Validate conventional commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate commit messages
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # SHAs are hex so safe to interpolate, but use env vars per
+          # GitHub Actions injection-defense guidance.
+          COMMITS=$(git log --format=%s "$BASE_SHA".."$HEAD_SHA")
+
+          FAILED=0
+          while IFS= read -r msg; do
+            [[ -z "$msg" ]] && continue
+            # Allow merge commits
+            if [[ "$msg" =~ ^Merge\  ]]; then
+              continue
+            fi
+            if ! echo "$msg" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\([a-z0-9-]+\))?!?: .+'; then
+              echo "::error::Invalid commit message: $msg"
+              echo "  Expected format: type(scope?): subject"
+              echo "  Valid types: feat, fix, docs, style, refactor, perf, test, chore, ci, build, revert"
+              FAILED=1
+            fi
+          done <<< "$COMMITS"
+
+          if [[ "$FAILED" -eq 1 ]]; then
+            echo ""
+            echo "See https://www.conventionalcommits.org/ for the full spec."
+            exit 1
+          fi
+
+          echo "✓ All commits follow Conventional Commits format."
