@@ -289,29 +289,34 @@ them. Otherwise:
 - Numeric literals without separators in a codebase that uses `_`.
 - SSR-unsafe `$app/navigation` calls outside a `browser` guard.
 - **Shebang interpreter doesn't match the file's actual runtime
-  requirements**: `#!/usr/bin/env node` on a `.ts` file *can* work on
-  modern Node because Node strips erasable type syntax natively —
-  `interface`, `as` casts, generic parameters, parameter type
-  annotations are all fine. Default-enabled in **Node 22.18+** and
-  **Node 23.6+ / 24**; available via `--experimental-strip-types`
-  in Node 22.6 through 22.17. Non-erasable TypeScript — enum values,
-  namespaces with runtime code, parameter properties
-  (`constructor(public x: number)`), TSX/JSX, or decorators that
-  need transformation — needs more: either pass
-  `--experimental-transform-types` to a Node version that supports
-  it (24/25+), or use `tsx`/`ts-node`/a build step. **The flag has
-  to actually be in the invocation** — a bare `#!/usr/bin/env node`
-  shebang doesn't pick it up; either inline with `#!/usr/bin/env -S
-  node --experimental-transform-types`, set `NODE_OPTIONS`, or call
-  from a script wrapper that adds it.
+  requirements**: `#!/usr/bin/env node` on a `.ts` file works only
+  for the slice of TypeScript syntax Node's *current* native support
+  handles. That support has three tiers and the version windows
+  matter (verify against Node's TypeScript docs because they shift):
 
-  The shebang should reflect the file's actual runtime: drop it if
-  the file is only invoked via package.json scripts, use
-  `#!/usr/bin/env -S tsx` for scripts that need tsx, or
-  `#!/usr/bin/env node` *only when* the file's syntax stays within
-  what Node's stripper supports and your project's pinned Node is
-  ≥ 22.18 or ≥ 23.6 (or ≥ 22.6 with the flag). Same trap class for
-  `#!/usr/bin/env python` running 3.10+ match-statement syntax in
-  an env where `python` resolves to 3.9, or `#!/bin/sh` running
-  bashisms like `[[ ]]` / `$'...'` — the interpreter the shebang
-  names must actually parse the file as written.
+  - **Erasable type syntax** (`interface`, `as` casts, generic
+    parameters, parameter type annotations): stripped natively by
+    default on **Node 22.18+** and **23.6+ / 24**; available via
+    `--experimental-strip-types` on Node 22.6-22.17. Cheapest, most
+    portable case.
+  - **Some non-erasable syntax** (enum values, namespaces with
+    runtime code, parameter properties): handled by
+    `--experimental-transform-types`, **available Node 22.7 through
+    25.x, removed in 26+**. Shebang must explicitly include the
+    flag — `#!/usr/bin/env -S node --experimental-transform-types`
+    — or set it via `NODE_OPTIONS` / a wrapper script. A
+    bare `node` shebang ignores it.
+  - **Not supported by Node natively**: TSX/JSX, decorators,
+    tsconfig path aliases. These require `tsx`, `ts-node`, or a
+    real build step regardless of Node version.
+
+  So `#!/usr/bin/env node` is right *only* when the file's syntax
+  fits the supported tiers for the project's pinned Node and the
+  invocation includes the right flags. `#!/usr/bin/env -S tsx`
+  covers everything but is heavier. Drop the shebang entirely if
+  the file is invoked only via npm scripts — no need to claim a
+  runtime in the file itself. Same trap class for `#!/usr/bin/env
+  python` running 3.10+ match-statement syntax where `python`
+  resolves to 3.9, or `#!/bin/sh` running bashisms like `[[ ]]` /
+  `$'...'` — the interpreter the shebang names must actually parse
+  the file as written.
