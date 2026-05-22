@@ -169,11 +169,15 @@ common in shared-config / monorepo / base-config setups.
   pulls in deps requiring `^20.19.0`, consumers on Node 20.0-20.18
   hit install/runtime failures. The declared constraint must satisfy
   every transitive requirement. Same trap on `actions/setup-node`'s
-  `node-version: '20'` (resolves to latest 20.x, but the runner's
-  default may lag the required minor), the `packageManager` field in
-  package.json, `.nvmrc`, Docker base image tags, and CI tool-version
-  pins. Pin to the strictest minimum the dependency tree requires,
-  or bump to the org-standard runtime version.
+  `node-version: '20'` — it picks whatever 20.x is already in the
+  runner's tool cache by semver match, which can lag the current
+  latest 20.x; pass `check-latest: true` to force a fresh lookup, or
+  pin to the minimum required minor (`'20.19'`) so the cache can't
+  resolve to something too old. Same family of issues with the
+  `packageManager` field in package.json, `.nvmrc`, Docker base image
+  tags, and CI tool-version pins. Pin to the strictest minimum the
+  dependency tree requires, or bump to the org-standard runtime
+  version.
 
 ### 8. Infrastructure & deploy hazards
 
@@ -286,21 +290,22 @@ them. Otherwise:
 - SSR-unsafe `$app/navigation` calls outside a `browser` guard.
 - **Shebang interpreter doesn't match the file's actual runtime
   requirements**: `#!/usr/bin/env node` on a `.ts` file *can* work on
-  Node 22.6+ (with `--experimental-strip-types`) and Node 23.6+ /
-  Node 24 (enabled by default) because Node strips erasable type
-  syntax natively — `interface`, `as` casts, generic parameters,
-  parameter type annotations are all fine. But Node *cannot* run
-  non-erasable TypeScript: enum values, namespaces with runtime
-  code, parameter properties (`constructor(public x: number)`),
-  TSX/JSX, or decorators that need transformation. For those, you
-  need `tsx`, `ts-node`, or a build step.
-  
+  modern Node because Node strips erasable type syntax natively —
+  `interface`, `as` casts, generic parameters, parameter type
+  annotations are all fine. Default-enabled in **Node 22.18+** and
+  **Node 23.6+ / 24**; available via `--experimental-strip-types`
+  in Node 22.6 through 22.17. But Node *cannot* run non-erasable
+  TypeScript: enum values, namespaces with runtime code, parameter
+  properties (`constructor(public x: number)`), TSX/JSX, or
+  decorators that need transformation. For those, you need `tsx`,
+  `ts-node`, or a build step.
+
   The shebang should reflect the file's actual runtime: drop it if
   the file is only invoked via package.json scripts, use
   `#!/usr/bin/env -S tsx` for scripts that need tsx, or
   `#!/usr/bin/env node` *only when* the file's syntax stays within
   what Node's stripper supports and your project's pinned Node is
-  ≥ 22.6 (with the flag) or ≥ 23.6. Same trap class for
+  ≥ 22.18 or ≥ 23.6 (or ≥ 22.6 with the flag). Same trap class for
   `#!/usr/bin/env python` running 3.10+ match-statement syntax in
   an env where `python` resolves to 3.9, or `#!/bin/sh` running
   bashisms like `[[ ]]` / `$'...'` — the interpreter the shebang
