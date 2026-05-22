@@ -132,7 +132,11 @@ For any PR that touches code referenced by docs *or* updates docs:
 - **Doc step is grammatically broken or ambiguous** after a recent edit.
 - **Examples in docs that point at paths or commands the PR moved**.
 
-### 7. Dead config & unwired parameters
+### 7. Config hazards: dead, surprising, or over-active
+
+Config that's missing a consumer is wasteful; config that has *invisible
+side effects on consumers* is the inverse problem and is just as
+common in shared-config / monorepo / base-config setups.
 
 - **Optional function parameter that no call site sets**: the behavior
   gated by the parameter is unreachable. Either make it required and
@@ -141,6 +145,25 @@ For any PR that touches code referenced by docs *or* updates docs:
   Dockerfile / app**: dead config, easy to mistake for a real secret
   channel later.
 - **Feature flags / settings that have no read site** after a refactor.
+- **Shared config with invisible side effects on consumers**: a config
+  consumed by other repos or packages (tsconfig, eslint, prettier,
+  vite, biome, package.json `scripts`) that turns on a behavior with
+  consumer-visible side effects without documenting it. Example:
+  `incremental: true` in a shared `tsconfig.base.json` silently emits
+  `.tsbuildinfo` files in every consumer's tree. If the behavior would
+  surprise the consumer, it belongs in the consumer's own config (let
+  them opt in), not the shared base.
+- **Shared config too narrow for the documented use cases**: shipping
+  a tsconfig that documents itself as appropriate for "SvelteKit apps"
+  but sets `lib: ["ES2022"]` only (no DOM types) — consumers hit
+  confusing type errors. Either narrow the documented use case, add a
+  per-environment variant (browser/node), or require an explicit
+  override and call it out.
+- **README install instructions that contradict package.json**:
+  README tells consumers to `pnpm add -D foo bar baz` but `foo` and
+  `bar` are already `optionalDependencies` (installed transitively).
+  Causes duplicate installation and version skew. Only document
+  installs the consumer must do themselves.
 
 ### 8. Infrastructure & deploy hazards
 
@@ -166,6 +189,22 @@ For changes under `manifests/`, `.github/workflows/`, `infra/`, `iac/`,
   clear usage error.
 - **Interpolated shell variables into `psql -c` / `sed` / `perl`
   substitutions** without escaping — fine today, time-bomb tomorrow.
+- **GitHub Actions workflow-command injection from user-controlled
+  content**: printing a commit subject, PR title, branch name, or any
+  other event-payload string inside a `::error::` / `::warning::` /
+  `::notice::` / `::set-output::` line without escaping lets an
+  attacker inject arbitrary workflow commands via `%` / `\r` / `\n` in
+  the source string. Escape with `s//\%/%25/`, `s/\r/%0D/`, `s/\n/%0A/`
+  before printing. (Even non-attack cases — a commit subject containing
+  `%` will get URL-decoded in the log and confuse you.)
+- **`echo "$user_input" | grep` parses dashes as flags**: subjects
+  starting with `-n`, `-e`, `-E` get treated as echo options by some
+  shells. Use `printf '%s\n' "$user_input"` instead — safe for any
+  input.
+- **GitHub Actions permissions broader than the workflow needs**: each
+  `permissions:` entry should map to a real API call the workflow
+  makes. `pull-requests: read` on a workflow that only reads git log
+  and event payload is dead scope. Drop it (least privilege).
 
 ### 9. Type-system tightening (where it matters)
 
