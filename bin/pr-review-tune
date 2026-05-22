@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+#
+# pr-review-tune — emit a calibration prompt that compares pr-review's
+# pre-PR findings against the actual review comments that landed on the
+# merged PR(s). The downstream LLM proposes specific edits to checklist.md
+# and extensions.md as a unified diff.
+#
+# Like pr-review, this script is harness-agnostic — it only emits a prompt.
+# Pipe to whichever tool you use.
+#
+# Usage:
+#   pr-review-tune --pr 422
+#   pr-review-tune --last 10
+#   pr-review-tune --since 2026-04-01
+#
+# Options:
+#   --pr N             Tune against a single PR
+#   --last N           Tune against the last N merged PRs (default: 10)
+#   --since DATE       Tune against PRs merged on or after DATE (ISO 8601)
+#   --repo DIR         Repo directory (default: $PWD)
+#   --core-dir DIR     pr-review core (default: discovered)
+#   --min-occurrences N
+#                      Pattern must appear in >=N PRs before being added to
+#                      the checklist (default: 3). Single-PR quirks won't
+#                      rewrite the prompt.
+#   --token-budget N   Soft cap on checklist.md size after edits (default:
+#                      8000). Forces consolidation rather than unbounded
+#                      append.
+#   -h, --help         Show this help
+#
+# Requires: gh (for fetching review comments), python3, jq.
+#
+set -euo pipefail
+
+CORE_DIR="${PR_REVIEW_CORE:-}"
+REPO="$PWD"
+PR_NUM=""
+LAST_N=""
+SINCE=""
+MIN_OCC=3
+TOKEN_BUDGET=8000
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --pr) PR_NUM="$2"; shift 2 ;;
+    --last) LAST_N="$2"; shift 2 ;;
+    --since) SINCE="$2"; shift 2 ;;
+    --repo) REPO="$2"; shift 2 ;;
+    --core-dir) CORE_DIR="$2"; shift 2 ;;
+    --min-occurrences) MIN_OCC="$2"; shift 2 ;;
+    --token-budget) TOKEN_BUDGET="$2"; shift 2 ;;
+    -h|--help)
+      sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo "pr-review-tune: unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$PR_NUM" && -z "$LAST_N" && -z "$SINCE" ]]; then
+  LAST_N=10
+fi
+
+if [[ -z "$CORE_DIR" ]]; then
+  if command -v realpath >/dev/null 2>&1; then
+    SELF="$(realpath "${BASH_SOURCE[0]}")"
+  else
+    SELF="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
+  fi
+  CORE_DIR="$(dirname "$(dirname "$SELF")")"
+fi
+
+cd "$REPO"
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "pr-review-tune: gh (GitHub CLI) is required" >&2
+  exit 1
+fi
+
+HISTORY_DIR="$REPO/.pr-review/history"
+if [[ ! -d "$HISTORY_DIR" ]]; then
+  echo "pr-review-tune: no history at $HISTORY_DIR" >&2
+  echo "  (run pr-review-capture on past PRs first, or pipe pr-review output" >&2
+  echo "   through pr-review-capture on future PRs to build up history)" >&2
+  exit 1
+fi
+
+REPO_FULL="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+
+# Determine PR list
+if [[ -n "$PR_NUM" ]]; then
+  PR_LIST="$PR_NUM"
+elif [[ -n "$SINCE" ]]; then
+  PR_LIST="$(gh pr list --repo "$REPO_FULL" --state merged --limit 200 \
+    --json number,mergedAt -q ".[] | select(.mergedAt >= \"$SINCE\") | .number")"
+else
+  PR_LIST="$(gh pr list --repo "$REPO_FULL" --state merged --limit "$LAST_N" \
+    --json number -q '.[].number')"
+fi
+
+if [[ -z "$PR_LIST" ]]; then
+  echo "pr-review-tune: no PRs matched" >&2
+  exit 1
+fi
+
+# Gather paired data: for each PR with stored findings + landed reviews,
+# emit a JSON envelope the tune prompt will consume.
+PAIRS_FILE="$(mktemp)"
+trap 'rm -f "$PAIRS_FILE"' EXIT
+
+MATCHED=0
+SKIPPED_NO_HISTORY=0
+
+while IFS= read -r PR; do
+  [[ -z "$PR" ]] && continue
+  PR_META="$(gh api "repos/$REPO_FULL/pulls/$PR" --jq '{number, title, headSha: .head.sha, mergedAt: .merged_at, files: (.changed_files // 0)}')"
+  HEAD_SHA="$(echo "$PR_META" | python3 -c 'import json,sys; print(json.load(sys.stdin)["headSha"])')"
+  HISTORY_FILE="$HISTORY_DIR/$HEAD_SHA.json"
+  if [[ ! -f "$HISTORY_FILE" ]]; then
+    SKIPPED_NO_HISTORY=$((SKIPPED_NO_HISTORY + 1))
+    continue
+  fi
+  INLINE_COMMENTS="$(gh api "repos/$REPO_FULL/pulls/$PR/comments" --paginate \
+    -q '[.[] | {author: .user.login, path: .path, line: .line, body: .body}]' 2>/dev/null || echo '[]')"
+  REVIEW_BODIES="$(gh api "repos/$REPO_FULL/pulls/$PR/reviews" --paginate \
+    -q '[.[] | select(.body != "" and .body != null) | {author: .user.login, state: .state, body: .body}]' 2>/dev/null || echo '[]')"
+  python3 - "$PR_META" "$HISTORY_FILE" "$INLINE_COMMENTS" "$REVIEW_BODIES" >> "$PAIRS_FILE" <<'PY'
+import json, sys
+meta = json.loads(sys.argv[1])
+history = json.load(open(sys.argv[2]))
+inline = json.loads(sys.argv[3])
+reviews = json.loads(sys.argv[4])
+print(json.dumps({
+    "pr": meta,
+    "pr_review_findings": history.get("findings", []),
+    "pr_review_summary": history.get("summary", ""),
+    "reviewer_inline_comments": inline,
+    "reviewer_summaries": reviews,
+}))
+PY
+  MATCHED=$((MATCHED + 1))
+done <<< "$PR_LIST"
+
+echo "pr-review-tune: matched $MATCHED PRs with stored history" >&2
+if [[ "$SKIPPED_NO_HISTORY" -gt 0 ]]; then
+  echo "pr-review-tune: skipped $SKIPPED_NO_HISTORY PRs without stored history" >&2
+fi
+if [[ "$MATCHED" -eq 0 ]]; then
+  echo "pr-review-tune: nothing to compare; capture future PRs with pr-review-capture" >&2
+  exit 1
+fi
+
+CHECKLIST="$(cat "$CORE_DIR/prompts/checklist.md")"
+EXTENSIONS=""
+EXTENSIONS_PATH="$REPO/.pr-review/extensions.md"
+if [[ -f "$EXTENSIONS_PATH" ]]; then
+  EXTENSIONS="$(cat "$EXTENSIONS_PATH")"
+fi
+
+PAIRS_JSON="$(cat "$PAIRS_FILE" | python3 -c 'import sys,json; print(json.dumps([json.loads(l) for l in sys.stdin if l.strip()]))')"
+
+cat <<HEADER
+# pr-review calibration
+
+You are tuning the pre-PR review prompt used by this project. You have:
+
+1. The current **checklist.md** (shared core, used across all repos).
+2. The current **extensions.md** (project-specific patterns, this repo only).
+3. A batch of recently-merged PRs with both:
+   - The findings pr-review produced *before* the PR opened.
+   - The actual review comments the PR received (Copilot + humans).
+
+Your job is to identify *repeating gaps* between the two and propose
+specific edits to the prompt files so the next round of pre-PR reviews
+catches more of what reviewers would otherwise have to point out.
+
+## Discipline
+
+Follow these rules. They prevent prompt rot.
+
+1. **Threshold for new items**: a pattern must appear in **≥$MIN_OCC PRs**
+   in this batch before you propose adding it as a new checklist item.
+   One-off quirks do not rewrite the prompt.
+2. **Prefer consolidation over addition**: if a missed pattern fits
+   under an existing checklist section, strengthen that section. Only
+   create a new section if the pattern is genuinely orthogonal to all
+   existing ones.
+3. **Propose removals**: if a checklist item has fired in this batch
+   with **zero reviewer agreement** (no inline comment, no human
+   follow-up) on **≥3 PRs**, propose either weakening or removing it.
+   False positives waste author attention and erode trust in the tool.
+4. **Token budget**: keep checklist.md under approximately **$TOKEN_BUDGET**
+   tokens after your edits. If you would exceed it, consolidate
+   aggressively before adding.
+5. **Project vs core**: edits that are clearly specific to this repo
+   (paths, framework versions, internal model names) belong in
+   extensions.md. Edits that would apply to *any* TypeScript / SvelteKit
+   / k8s codebase belong in checklist.md.
+6. **Calibrate severity**, not just presence: if reviewers consistently
+   rated something higher or lower than pr-review did, propose
+   severity-guidance edits.
+
+## Output format
+
+Emit two things, in order:
+
+### 1. Summary
+
+Two to four sentences: the shape of the gaps you found, the proposed
+direction of edits, and any blind spots you noticed that you *cannot* fix
+with prompt edits alone (e.g. "business-logic intent gaps — these
+need human review or a different tool entirely").
+
+### 2. Diffs
+
+Unified diff format, applyable with \`patch -p0\`. One diff per file
+edited. Use the existing file paths as headers:
+
+\`\`\`diff
+--- a/prompts/checklist.md
++++ b/prompts/checklist.md
+@@ -NN,NN +NN,NN @@
+ ... context ...
+-removed line
++added line
+\`\`\`
+
+If you propose no edits (the prompt is well-calibrated for this batch),
+say so explicitly in the summary and emit no diffs. **Do not** invent
+edits to look productive.
+
+### 3. Coverage notes (optional)
+
+If you notice categories of reviewer findings the prompt *cannot
+realistically catch* (intent, business logic, cross-PR design questions),
+list them under a "## Cannot fix with prompt" heading so the maintainer
+knows where to invest in other tooling instead.
+
+---
+
+## Current prompts
+
+### checklist.md (shared core, $(echo "$CHECKLIST" | wc -w) words)
+
+\`\`\`markdown
+$CHECKLIST
+\`\`\`
+
+HEADER
+
+if [[ -n "$EXTENSIONS" ]]; then
+  cat <<EXT
+### extensions.md ($REPO_FULL, $(echo "$EXTENSIONS" | wc -w) words)
+
+\`\`\`markdown
+$EXTENSIONS
+\`\`\`
+
+EXT
+fi
+
+cat <<DATA
+---
+
+## Comparison data ($MATCHED PRs)
+
+For each PR: the findings pr-review produced before the PR opened, paired
+with the review comments the PR ultimately received. Authors of reviewer
+comments include \`Copilot\`, \`copilot-pull-request-reviewer[bot]\`, and
+human reviewers (login varies). The PR author's own comments are usually
+self-review and are also worth comparing against.
+
+\`\`\`json
+$PAIRS_JSON
+\`\`\`
+DATA

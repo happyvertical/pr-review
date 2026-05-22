@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+#
+# pr-review — emit a pre-PR review prompt+diff bundle to stdout.
+#
+# Harness-agnostic: this script *only* emits a prompt. Pipe the output to
+# whichever LLM tool you use. See examples in README.md.
+#
+# Usage:
+#   pr-review [options]
+#
+# Options:
+#   --base BRANCH         Base branch to diff against (default: auto-detect
+#                         from origin/HEAD, falling back to dev/main/master)
+#   --repo DIR            Repo directory (default: $PWD)
+#   --pretty              Emit markdown findings instead of JSON
+#   --include-new-files   Embed full contents of newly-added files in addition
+#                         to the diff (helps with new-file context)
+#   --core-dir DIR        Path to shared pr-review core (default: discovered
+#                         from $PR_REVIEW_CORE or relative to this script)
+#   -h, --help            Show this help
+#
+# Examples:
+#   pr-review | codex exec -                              # codex CLI
+#   claude -p "$(pr-review)"                              # Claude Code (one-shot)
+#   pr-review --pretty | pbcopy                           # paste into a web chat
+#   pr-review --base origin/main | gemini -               # gemini-cli
+#
+set -euo pipefail
+
+CORE_DIR="${PR_REVIEW_CORE:-}"
+BASE=""
+REPO="$PWD"
+PRETTY=0
+INCLUDE_NEW_FILES=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) BASE="$2"; shift 2 ;;
+    --repo) REPO="$2"; shift 2 ;;
+    --pretty) PRETTY=1; shift ;;
+    --include-new-files) INCLUDE_NEW_FILES=1; shift ;;
+    --core-dir) CORE_DIR="$2"; shift 2 ;;
+    -h|--help)
+      sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo "pr-review: unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+# Resolve core dir if not provided
+if [[ -z "$CORE_DIR" ]]; then
+  if command -v realpath >/dev/null 2>&1; then
+    SELF="$(realpath "${BASH_SOURCE[0]}")"
+  else
+    # macOS without coreutils
+    SELF="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")"
+  fi
+  CORE_DIR="$(dirname "$(dirname "$SELF")")"
+fi
+
+if [[ ! -d "$CORE_DIR/prompts" ]]; then
+  echo "pr-review: cannot find core prompts at $CORE_DIR/prompts" >&2
+  echo "  Set PR_REVIEW_CORE env var or pass --core-dir DIR" >&2
+  exit 1
+fi
+
+cd "$REPO"
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "pr-review: $REPO is not a git repo" >&2
+  exit 1
+fi
+
+# Auto-detect base branch
+if [[ -z "$BASE" ]]; then
+  # Prefer origin/HEAD if set
+  if git symbolic-ref --quiet refs/remotes/origin/HEAD >/dev/null 2>&1; then
+    BASE="$(git symbolic-ref --short refs/remotes/origin/HEAD)"
+  else
+    for candidate in dev develop main master; do
+      if git show-ref --verify --quiet "refs/remotes/origin/$candidate"; then
+        BASE="origin/$candidate"
+        break
+      fi
+    done
+  fi
+  if [[ -z "$BASE" ]]; then
+    echo "pr-review: cannot auto-detect base branch; pass --base BRANCH" >&2
+    exit 1
+  fi
+fi
+
+MERGE_BASE="$(git merge-base "$BASE" HEAD)"
+REPO_NAME="$(basename "$(git rev-parse --show-toplevel)")"
+HEAD_REF="$(git rev-parse --abbrev-ref HEAD)"
+HEAD_SHA="$(git rev-parse --short HEAD)"
+
+CHANGED_FILES="$(git diff --name-status "$MERGE_BASE...HEAD")"
+DIFF_STAT="$(git diff --stat "$MERGE_BASE...HEAD")"
+COMMIT_LOG="$(git log --oneline --no-decorate "$MERGE_BASE..HEAD")"
+DIFF="$(git diff "$MERGE_BASE...HEAD")"
+
+if [[ -z "$CHANGED_FILES" ]]; then
+  echo "pr-review: no changes between $BASE and HEAD" >&2
+  exit 1
+fi
+
+# Optionally embed contents of newly-added files (status 'A')
+NEW_FILES_SECTION=""
+if [[ "$INCLUDE_NEW_FILES" -eq 1 ]]; then
+  while IFS=$'\t' read -r status path; do
+    [[ "$status" == "A" ]] || continue
+    # Skip binary or huge files
+    size=$(wc -c <"$path" 2>/dev/null || echo 0)
+    [[ "$size" -gt 0 && "$size" -lt 50000 ]] || continue
+    NEW_FILES_SECTION+=$'\n\n### `'"$path"$'`\n\n```\n'"$(cat "$path")"$'\n```'
+  done <<< "$CHANGED_FILES"
+fi
+
+CHECKLIST="$(cat "$CORE_DIR/prompts/checklist.md")"
+
+EXTENSIONS=""
+if [[ -f "$REPO/.pr-review/extensions.md" ]]; then
+  EXTENSIONS="$(cat "$REPO/.pr-review/extensions.md")"
+fi
+
+if [[ "$PRETTY" -eq 1 ]]; then
+  FORMAT="$(cat "$CORE_DIR/prompts/output-pretty.md")"
+else
+  FORMAT="$(cat "$CORE_DIR/prompts/output-json.md")"
+fi
+
+# --- Emit bundle to stdout ---
+
+cat <<HEADER
+# Pre-PR Review
+
+You are reviewing a pull request **before** it is opened. The author will fix
+findings now rather than in a review cycle. Optimize for high-signal findings
+the author would otherwise hear from a careful human reviewer (or an AI
+reviewer like GitHub Copilot reviewing the same PR after the fact).
+
+**Do not** report style/formatting issues a linter or formatter would catch.
+Trust that Biome / Prettier / Black / etc. run separately. Focus on
+substance: correctness, security, regressions, drift, dead code, races.
+
+## Repo
+
+- **Name:** \`$REPO_NAME\`
+- **Branch:** \`$HEAD_REF\` @ \`$HEAD_SHA\`
+- **Base:** \`$BASE\` (merge-base \`$MERGE_BASE\`)
+
+## Commits on this branch
+
+\`\`\`
+$COMMIT_LOG
+\`\`\`
+
+## Changed files
+
+\`\`\`
+$DIFF_STAT
+\`\`\`
+
+---
+
+$CHECKLIST
+HEADER
+
+if [[ -n "$EXTENSIONS" ]]; then
+  cat <<EXT
+
+---
+
+## Project-specific patterns (\`$REPO_NAME\`)
+
+These rules are specific to this repository. Treat as additions to the core
+checklist above, not replacements.
+
+$EXTENSIONS
+EXT
+fi
+
+cat <<FORMAT
+
+---
+
+$FORMAT
+
+---
+
+## Diff
+FORMAT
+
+if [[ -n "$NEW_FILES_SECTION" ]]; then
+  cat <<NEW
+
+### Newly-added files (full contents)
+$NEW_FILES_SECTION
+NEW
+fi
+
+cat <<DIFF
+
+\`\`\`diff
+$DIFF
+\`\`\`
+DIFF

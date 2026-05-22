@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+#
+# pr-review-capture — save pr-review findings to disk for later calibration.
+#
+# Reads a JSON findings object (the default output format of pr-review) from
+# stdin, validates it, and writes it to
+# <repo>/.pr-review/history/<sha>.json
+# also appending a one-line entry to history/index.jsonl. Then passes the
+# original JSON through to stdout unchanged so you can chain `| tee` etc.
+#
+# This is what pr-review-tune later reads to compare against actual review
+# comments on the merged PR.
+#
+# Usage:
+#   pr-review | codex exec - | pr-review-capture
+#   pr-review | codex exec - | pr-review-capture | tee /dev/tty
+#
+# Options:
+#   --repo DIR     Repo directory (default: $PWD)
+#   --sha SHA      Override commit SHA (default: git rev-parse HEAD)
+#   --branch REF   Override branch name (default: git current branch)
+#   -h, --help     Show this help
+#
+set -euo pipefail
+
+REPO="$PWD"
+SHA=""
+BRANCH=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --sha) SHA="$2"; shift 2 ;;
+    --branch) BRANCH="$2"; shift 2 ;;
+    -h|--help)
+      sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo "pr-review-capture: unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+cd "$REPO"
+
+if [[ -z "$SHA" ]]; then
+  SHA="$(git rev-parse HEAD)"
+fi
+if [[ -z "$BRANCH" ]]; then
+  BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+fi
+
+HISTORY_DIR="$REPO/.pr-review/history"
+mkdir -p "$HISTORY_DIR"
+
+# Read stdin into temp file so we can validate and re-emit
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+cat > "$TMP"
+
+# Validate it's JSON with the expected shape
+if ! python3 - "$TMP" <<'PY' >&2
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception as e:
+    print(f"pr-review-capture: stdin is not valid JSON: {e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(data, dict) or "findings" not in data:
+    print("pr-review-capture: JSON is missing required 'findings' key", file=sys.stderr)
+    print("  (did you forget to drop --pretty? capture expects the JSON output mode)", file=sys.stderr)
+    sys.exit(1)
+PY
+then
+  exit 1
+fi
+
+OUT="$HISTORY_DIR/$SHA.json"
+cp "$TMP" "$OUT"
+
+# Append index entry
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+FINDINGS_COUNT="$(python3 -c "import json; print(len(json.load(open('$OUT'))['findings']))")"
+SEVERITIES="$(python3 -c "
+import json
+from collections import Counter
+c = Counter(f.get('severity','?') for f in json.load(open('$OUT'))['findings'])
+print(json.dumps(dict(c)))
+")"
+
+INDEX="$HISTORY_DIR/index.jsonl"
+python3 - <<PY >> "$INDEX"
+import json
+print(json.dumps({
+    "sha": "$SHA",
+    "branch": "$BRANCH",
+    "captured_at": "$NOW",
+    "findings_count": $FINDINGS_COUNT,
+    "severities": json.loads('$SEVERITIES'),
+}))
+PY
+
+echo "pr-review-capture: saved $FINDINGS_COUNT findings to $OUT" >&2
+
+# Pass through to stdout
+cat "$OUT"
